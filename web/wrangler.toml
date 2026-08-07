@@ -1,0 +1,11 @@
+name = "watchlist-tool-web"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set as Worker secrets
+# (`wrangler secret put TURSO_DATABASE_URL`, etc.), never committed here —
+# this repo is public. SESSION_SECRET (for signing session cookies) and
+# the single-user login password hash are set the same way.
+#
+# [vars] is intentionally left empty; see README.md "Deployment" for the
+# full list of required secrets and how to set them.
