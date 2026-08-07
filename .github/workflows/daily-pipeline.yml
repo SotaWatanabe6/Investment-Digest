@@ -36,3 +36,4 @@ jobs:
           DIGEST_FROM_EMAIL: ${{ secrets.DIGEST_FROM_EMAIL }}
           DAILY_SPEND_CEILING_USD: ${{ vars.DAILY_SPEND_CEILING_USD }}
         run: python orchestrator.py
+
