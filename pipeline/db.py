@@ -17,12 +17,42 @@ import libsql_experimental as libsql
 from config import Config
 
 
+class _ResilientConnection:
+    """Wraps a libsql connection and transparently reconnects on Turso's
+    Hrana "stream not found" error.
+
+    The pipeline holds one connection open across the whole run, but slow
+    Anthropic API calls (many seconds each) create long idle gaps between
+    database writes. Turso expires the underlying HTTP stream server-side
+    after enough idle time, so the next write on the same connection object
+    fails with a 404 even though nothing is actually wrong. Reconnecting is
+    cheap (stateless HTTP), so retrying once after a fresh connection is
+    sufficient rather than treating this as a hard pipeline failure.
+    """
+
+    def __init__(self, config: Config):
+        self._config = config
+        self._conn = self._new_conn()
+
+    def _new_conn(self):
+        return libsql.connect(
+            database=self._config.turso_database_url,
+            auth_token=self._config.turso_auth_token,
+        )
+
+    def execute(self, *args, **kwargs):
+        try:
+            return self._conn.execute(*args, **kwargs)
+        except ValueError as e:
+            if "stream not found" not in str(e):
+                raise
+            self._conn = self._new_conn()
+            return self._conn.execute(*args, **kwargs)
+
+
 def connect(config: Config):
     """Open a connection to the shared Turso database."""
-    return libsql.connect(
-        database=config.turso_database_url,
-        auth_token=config.turso_auth_token,
-    )
+    return _ResilientConnection(config)
 
 
 def now_iso() -> str:
