@@ -9,7 +9,11 @@
 import type { Env } from "./db";
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7-day idle expiry
-const PBKDF2_ITERATIONS = 210_000; // OWASP-recommended floor for PBKDF2-SHA256 as of 2026
+// OWASP recommends 210,000+ for PBKDF2-SHA256 as of 2026, but the Workers
+// runtime's Web Crypto implementation hard-caps PBKDF2 at 100,000
+// iterations (throws NotSupportedError above that) — this is the max
+// usable value here, not a security choice.
+const PBKDF2_ITERATIONS = 100_000;
 
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");

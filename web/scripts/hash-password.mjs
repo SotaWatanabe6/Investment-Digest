@@ -7,7 +7,9 @@
 
 import { webcrypto as crypto } from "node:crypto";
 
-const PBKDF2_ITERATIONS = 210_000;
+// Must match web/src/auth.ts exactly — the Workers runtime's PBKDF2
+// implementation hard-caps at 100,000 iterations.
+const PBKDF2_ITERATIONS = 100_000;
 
 function toHex(buffer) {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");

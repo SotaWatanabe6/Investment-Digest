@@ -15,7 +15,19 @@ watchlistRoutes.get("/watchlist", async (c) => {
   const result = await db.execute(
     "SELECT id, symbol, type, full_name, added_at FROM holding WHERE active = 1 ORDER BY symbol"
   );
-  return c.json({ holdings: result.rows });
+  // @libsql/client's Row objects don't serialize to plain arrays/objects
+  // through JSON the way a naive positional-index read on the client
+  // assumes (this was the source of the "undefined" rendering bug) —
+  // mapping to explicit plain objects here guarantees stable field names
+  // over the wire regardless of the driver's internal Row representation.
+  const holdings = result.rows.map((row) => ({
+    id: row.id,
+    symbol: row.symbol,
+    type: row.type,
+    full_name: row.full_name,
+    added_at: row.added_at,
+  }));
+  return c.json({ holdings });
 });
 
 watchlistRoutes.post("/watchlist", async (c) => {
@@ -49,6 +61,40 @@ watchlistRoutes.post("/watchlist", async (c) => {
   }
 
   return c.json({ ok: true }, 201);
+});
+
+watchlistRoutes.patch("/watchlist/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) {
+    return c.json({ error: "invalid id" }, 400);
+  }
+
+  const body = await c.req.json<{ type?: string; full_name?: string }>().catch(() => null);
+  if (!body?.type && !body?.full_name) {
+    return c.json({ error: "type and/or full_name required" }, 400);
+  }
+  if (body.type && !VALID_TYPES.has(body.type)) {
+    return c.json({ error: "type must be one of: stock, mutual_fund, etf" }, 400);
+  }
+
+  // Symbol is intentionally not editable here — it's the unique key
+  // holdings are matched against; changing it is a remove + re-add.
+  const updates: string[] = [];
+  const args: (string | number)[] = [];
+  if (body.type) {
+    updates.push("type = ?");
+    args.push(body.type);
+  }
+  if (body.full_name) {
+    updates.push("full_name = ?");
+    args.push(body.full_name.trim());
+  }
+  args.push(id);
+
+  const db = getDb(c.env);
+  await db.execute({ sql: `UPDATE holding SET ${updates.join(", ")} WHERE id = ?`, args });
+
+  return c.json({ ok: true });
 });
 
 watchlistRoutes.delete("/watchlist/:id", async (c) => {
