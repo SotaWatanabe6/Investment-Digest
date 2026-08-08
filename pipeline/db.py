@@ -103,16 +103,20 @@ def get_user_settings(conn) -> dict[str, Any]:
     return {"digest_send_time": row[0], "global_pause_flag": bool(row[1])}
 
 
-def create_digest_run(conn, send_time: str) -> int:
+def create_digest_run(conn, send_time: str, period_date: str | None = None) -> int:
     # RETURNING id in the same statement, rather than a separate
     # `SELECT last_insert_rowid()` call — over Turso's stateless HTTP
     # (Hrana) protocol, a follow-up call isn't guaranteed to land on the
     # same session as the INSERT, so last_insert_rowid() can silently
     # return a stale/wrong value (this caused a real FOREIGN KEY failure
     # downstream when the wrong id got used as a foreign key).
+    #
+    # period_date defaults to today (normal scheduled operation always
+    # covers "today"); a backfill run passes the specific historical day
+    # it's generating a digest for instead.
     result = conn.execute(
         "INSERT INTO digest_run (run_date, send_time, status, started_at) VALUES (?, ?, 'failed', ?) RETURNING id",
-        (today_str(), send_time, now_iso()),
+        (period_date or today_str(), send_time, now_iso()),
     )
     return result.fetchone()[0]
 
@@ -124,13 +128,22 @@ def complete_digest_run(conn, run_id: int, status: str, total_cost_usd: float) -
     )
 
 
-def get_sent_run_count_today(conn) -> int:
-    """Backs the max-1-send-per-day safeguard (enforced again at the tool
-    boundary in tools/email_tool.py — this is the DB-level check the tool
-    consults, not a substitute for it)."""
+def get_sent_run_count_for_period(conn, period_date: str) -> int:
+    """Backs the max-1-send-per-covered-period safeguard (enforced again at
+    the tool boundary in tools/email_tool.py — this is the DB-level check
+    the tool consults, not a substitute for it).
+
+    For a normal scheduled run, period_date is always today's real date, so
+    this is exactly "max 1 send per real day" — the original runaway-loop
+    protection is unchanged. A deliberate backfill run passes a specific
+    historical period_date instead, which allows one send per distinct
+    historical day even when several backfill runs happen within the same
+    real day — while still refusing to double-send for the *same* period,
+    which is what the safeguard actually exists to prevent.
+    """
     row = conn.execute(
         "SELECT COUNT(*) FROM digest_run WHERE run_date = ? AND status = 'sent'",
-        (today_str(),),
+        (period_date,),
     ).fetchone()
     return row[0]
 
@@ -190,7 +203,13 @@ def get_recent_daily_summaries(conn, holding_id: int, days: int = 7) -> list[str
     return [r[0] for r in rows]
 
 
-def save_daily_summary(conn, holding_id: int, compact_summary: str, token_count: int) -> None:
+def save_daily_summary(
+    conn, holding_id: int, compact_summary: str, token_count: int, summary_date: str | None = None
+) -> None:
+    # summary_date defaults to today; a backfill run passes the historical
+    # day it's writing a summary for, so the 7-day recall window stays
+    # dated correctly rather than every backfilled summary landing on
+    # today's date.
     conn.execute(
         """
         INSERT INTO holding_daily_summary (holding_id, summary_date, compact_summary, token_count)
@@ -199,7 +218,7 @@ def save_daily_summary(conn, holding_id: int, compact_summary: str, token_count:
             compact_summary = excluded.compact_summary,
             token_count = excluded.token_count
         """,
-        (holding_id, today_str(), compact_summary, token_count),
+        (holding_id, summary_date or today_str(), compact_summary, token_count),
     )
 
 

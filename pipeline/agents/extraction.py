@@ -26,9 +26,9 @@ from tools.finnhub_adapter import FinnhubProvider
 
 
 def extract_filings(
-    client: anthropic.Anthropic, model: str, holding: Holding, since_date: str
+    client: anthropic.Anthropic, model: str, holding: Holding, since_date: str, until_date: str | None = None
 ) -> tuple[AgentCallResult, int]:
-    filings = edgar.get_filings(holding.symbol, since_date)
+    filings = edgar.get_filings(holding.symbol, since_date, until_date=until_date)
     raw = "\n".join(
         f"- [{f.form_type}] filed {f.filed_at}: {f.summary} ({f.url})" for f in filings
     ) or "No filings found in this period."
@@ -48,11 +48,12 @@ def extract_news(
     holding: Holding,
     since_date: str,
     news_provider: FinnhubProvider,
+    until_date: str | None = None,
 ) -> tuple[AgentCallResult, int]:
     # Adaptive pull depth (AI Product Decisions Stage 1): a wider initial
     # pull than the screening pass, letting the extraction agent itself
     # decide in its output how much of it is actually noteworthy.
-    articles = news_provider.get_news(holding.symbol, since_date, max_articles=15)
+    articles = news_provider.get_news(holding.symbol, since_date, max_articles=15, until_date=until_date)
     raw = "\n".join(
         f"- \"{a.headline}\" ({a.source}, {a.published_at}): {a.summary} [{a.url}]" for a in articles
     ) or "No news articles found in this period."

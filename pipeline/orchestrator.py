@@ -22,6 +22,7 @@ autonomously choose which tool to call next.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import anthropic
@@ -44,9 +45,22 @@ def run_daily_pipeline() -> None:
     # Step 3 scope note) — global_pause_flag exists in the schema already
     # so Phase 2 doesn't need a migration, but Phase 1 always runs.
 
-    since_date = _last_covered_date(conn)
+    # BACKFILL_PERIOD_DATE (optional, set via workflow_dispatch input for a
+    # manually-triggered backfill run — see .github/workflows/daily-pipeline.yml)
+    # makes this run cover exactly one historical day (since_date == until_date
+    # == that day) instead of "since the last sent digest through now."
+    # period_date drives both the recorded digest_run.run_date and the
+    # send-limit check, so several backfill runs can each send once, one per
+    # distinct historical day, without weakening the normal "max 1 send per
+    # real day" protection a scheduled run still gets (period_date is None
+    # there, so everything defaults to today as before).
+    backfill_date = os.environ.get("BACKFILL_PERIOD_DATE") or None
+    since_date = backfill_date or _last_covered_date(conn)
+    until_date = backfill_date  # None for normal runs — unbounded through "now"
+    period_date = backfill_date  # None for normal runs — db.py defaults to today
+
     holdings = db.get_active_holdings(conn)
-    run_id = db.create_digest_run(conn, settings["digest_send_time"])
+    run_id = db.create_digest_run(conn, settings["digest_send_time"], period_date=period_date)
 
     total_cost_usd = 0.0
     holdings_payload = []
@@ -63,7 +77,7 @@ def run_daily_pipeline() -> None:
                 return
 
             entry, cost = _process_holding(
-                conn, client, config, run_id, holding, since_date, news_provider
+                conn, client, config, run_id, holding, since_date, news_provider, until_date
             )
             total_cost_usd += cost
             holdings_payload.append(entry)
@@ -81,12 +95,13 @@ def run_daily_pipeline() -> None:
         for holding in holdings:
             summary = compose_result.data["daily_summary_by_holding"].get(str(holding.id), "")
             if summary:
-                db.save_daily_summary(conn, holding.id, summary, len(summary.split()))
+                db.save_daily_summary(conn, holding.id, summary, len(summary.split()), summary_date=period_date)
 
         try:
             send_email(
                 conn, config.resend_api_key, config.digest_to_email, config.digest_from_email,
                 compose_result.data["subject_line"], compose_result.data["html_body"],
+                period_date=period_date,
             )
             db.complete_digest_run(conn, run_id, "sent", total_cost_usd)
         except SendLimitExceededError as e:
@@ -98,11 +113,11 @@ def run_daily_pipeline() -> None:
         raise
 
 
-def _process_holding(conn, client, config, run_id, holding, since_date, news_provider):
+def _process_holding(conn, client, config, run_id, holding, since_date, news_provider, until_date=None):
     cost = 0.0
 
     screen_result, screen_ms = screening.run_screening(
-        client, config.screening_model, holding, since_date, news_provider
+        client, config.screening_model, holding, since_date, news_provider, until_date=until_date
     )
     cost += screen_result.cost_usd
     db.log_agent_run(
@@ -117,8 +132,12 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
         )
         return _entry_payload(holding, since_date, [], [], [], {}, True, []), cost
 
-    filings_result, filings_ms = extraction.extract_filings(client, config.reasoning_model, holding, since_date)
-    news_result, news_ms = extraction.extract_news(client, config.reasoning_model, holding, since_date, news_provider)
+    filings_result, filings_ms = extraction.extract_filings(
+        client, config.reasoning_model, holding, since_date, until_date=until_date
+    )
+    news_result, news_ms = extraction.extract_news(
+        client, config.reasoning_model, holding, since_date, news_provider, until_date=until_date
+    )
     macro_result, macro_ms = extraction.extract_macro(client, config.reasoning_model, holding, since_date, news_provider)
     cost += filings_result.cost_usd + news_result.cost_usd + macro_result.cost_usd
 
@@ -147,7 +166,7 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
     # single retry so a persistently-uncertain agent can't loop indefinitely
     # and blow through the spend ceiling.
     if val_result.data.get("needs_more_context"):
-        deeper_news = news_provider.get_news(holding.symbol, since_date, max_articles=25)
+        deeper_news = news_provider.get_news(holding.symbol, since_date, max_articles=25, until_date=until_date)
         extra_context = "\n".join(f"- {a.headline}: {a.summary}" for a in deeper_news)
         val_result, val_ms = validation.run_validation(
             conn, client, config.reasoning_model, holding,

@@ -46,10 +46,16 @@ def _cik_for_symbol(client: httpx.Client, symbol: str) -> str | None:
     return None
 
 
-def get_filings(symbol: str, since_date: str) -> list[Filing]:
+def get_filings(symbol: str, since_date: str, until_date: str | None = None) -> list[Filing]:
     """Fetch Form 4 (buys and sells), 8-K, and earnings-related filings for
-    a symbol since the given date (YYYY-MM-DD). This is the `get_filings`
-    MCP tool's underlying implementation.
+    a symbol since the given date (YYYY-MM-DD), optionally bounded above by
+    until_date. This is the `get_filings` MCP tool's underlying
+    implementation.
+
+    until_date defaults to unbounded (normal operation always wants
+    "through now"); a backfill run passes a specific upper bound so each
+    historical day's digest covers exactly that day, not everything up to
+    the real present.
 
     Per the PRD's reliability requirement, an EDGAR outage or lookup
     failure degrades this holding to "no filings found" rather than
@@ -79,6 +85,8 @@ def get_filings(symbol: str, since_date: str) -> list[Filing]:
     filings: list[Filing] = []
     for i, form_type in enumerate(forms):
         if dates[i] < since_date:
+            continue
+        if until_date is not None and dates[i] > until_date:
             continue
         if form_type not in ("4", "8-K"):
             # Earnings releases typically surface as 8-K Item 2.02;

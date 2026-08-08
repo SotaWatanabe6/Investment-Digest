@@ -29,10 +29,13 @@ class MacroSnapshot:
 
 
 class NewsProvider(Protocol):
-    def get_news(self, symbol: str, since_date: str, max_articles: int = 10) -> list[NewsArticle]:
-        """Return attributed news articles for a symbol since the given date.
-        Explicitly excludes social sentiment sources (Reddit, social media)
-        per the Product Plan's settled scope."""
+    def get_news(
+        self, symbol: str, since_date: str, max_articles: int = 10, until_date: str | None = None
+    ) -> list[NewsArticle]:
+        """Return attributed news articles for a symbol since the given
+        date, optionally bounded above by until_date. Explicitly excludes
+        social sentiment sources (Reddit, social media) per the Product
+        Plan's settled scope."""
         ...
 
     def get_macro(self, symbol: str, sector: str | None, since_date: str) -> list[MacroSnapshot]:

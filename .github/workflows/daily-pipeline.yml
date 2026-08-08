@@ -7,7 +7,12 @@ on:
     # placeholder; adjust to your preferred send time before relying on
     # this, since GitHub Actions cron has no per-user config surface.
     - cron: "0 12 * * *"
-  workflow_dispatch: {} # allows a manual run from the Actions tab for testing
+  workflow_dispatch:
+    inputs:
+      backfill_period_date:
+        description: "Optional: generate a digest for one specific historical day (YYYY-MM-DD) instead of the normal since-last-digest window. Leave blank for a normal run."
+        required: false
+        type: string
 
 jobs:
   run-pipeline:
@@ -35,5 +40,6 @@ jobs:
           DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
           DIGEST_FROM_EMAIL: ${{ secrets.DIGEST_FROM_EMAIL }}
           DAILY_SPEND_CEILING_USD: ${{ vars.DAILY_SPEND_CEILING_USD }}
+          BACKFILL_PERIOD_DATE: ${{ inputs.backfill_period_date }}
         run: python orchestrator.py
 

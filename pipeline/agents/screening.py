@@ -21,12 +21,18 @@ def run_screening(
     holding: Holding,
     since_date: str,
     news_provider: FinnhubProvider,
+    until_date: str | None = None,
 ) -> tuple[AgentCallResult, int]:
     """Cheap raw-activity check (a small filings/news pull, not a full
     extraction pass) feeds the screening decision. Full extraction only
-    runs downstream if this agent says yes."""
-    filings = edgar.get_filings(holding.symbol, since_date)
-    news = news_provider.get_news(holding.symbol, since_date, max_articles=3)
+    runs downstream if this agent says yes.
+
+    until_date defaults to unbounded (normal operation); a backfill run
+    passes a specific historical upper bound so the window matches exactly
+    one day rather than extending through the real present.
+    """
+    filings = edgar.get_filings(holding.symbol, since_date, until_date=until_date)
+    news = news_provider.get_news(holding.symbol, since_date, max_articles=3, until_date=until_date)
 
     user_content = (
         f"Holding: {holding.full_name} ({holding.symbol})\n"

@@ -21,17 +21,23 @@ class FinnhubProvider:
     def _client(self) -> httpx.Client:
         return httpx.Client(params={"token": self._api_key}, timeout=15.0)
 
-    def get_news(self, symbol: str, since_date: str, max_articles: int = 10) -> list[NewsArticle]:
+    def get_news(
+        self, symbol: str, since_date: str, max_articles: int = 10, until_date: str | None = None
+    ) -> list[NewsArticle]:
         # Finnhub's free-tier /company-news endpoint only covers individual
         # equities — it 403s on mutual fund symbols (e.g. SWPPX), which are
         # a valid holding type per the Product Plan. Per the PRD's
         # reliability requirement, a source failure degrades this holding
         # to "no news found" rather than crashing the whole pipeline run.
+        #
+        # until_date defaults to real "today" (normal operation always
+        # wants "through now"); a backfill run passes a specific upper
+        # bound so each historical day's digest covers exactly that day.
         try:
             with self._client() as client:
                 resp = client.get(
                     f"{FINNHUB_BASE_URL}/company-news",
-                    params={"symbol": symbol, "from": since_date, "to": _today()},
+                    params={"symbol": symbol, "from": since_date, "to": until_date or _today()},
                 )
                 resp.raise_for_status()
                 articles = resp.json()
