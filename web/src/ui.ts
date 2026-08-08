@@ -98,6 +98,19 @@ function watchlistPage(): string {
   <div class="error" id="error"></div>
   <ul id="list"></ul>
   <script>
+    // Holding names are user-supplied and rendered via innerHTML below —
+    // without escaping, a name containing HTML/script would execute as
+    // stored XSS. This also covers the attribute-injection vector in the
+    // edit form's value="\${...}" interpolation.
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     const TYPE_OPTIONS = [
       { value: 'stock', label: 'Stock' },
       { value: 'etf', label: 'ETF' },
@@ -113,7 +126,7 @@ function watchlistPage(): string {
     function rowHtml(h) {
       return \`
         <li data-id="\${h.id}">
-          <span><span class="symbol">\${h.symbol}</span><span class="name">\${h.full_name}</span></span>
+          <span><span class="symbol">\${escapeHtml(h.symbol)}</span><span class="name">\${escapeHtml(h.full_name)}</span></span>
           <span class="actions">
             <button class="edit" data-id="\${h.id}">Edit</button>
             <button class="remove" data-id="\${h.id}">Remove</button>
@@ -125,9 +138,9 @@ function watchlistPage(): string {
       return \`
         <li data-id="\${h.id}">
           <form class="edit-form" data-id="\${h.id}">
-            <span class="symbol">\${h.symbol}</span>
+            <span class="symbol">\${escapeHtml(h.symbol)}</span>
             <select class="edit-type">\${typeSelectHtml(h.type)}</select>
-            <input type="text" class="edit-name" value="\${h.full_name}" required>
+            <input type="text" class="edit-name" value="\${escapeHtml(h.full_name)}" required>
             <button type="submit">Save</button>
             <button type="button" class="cancel-edit">Cancel</button>
           </form>

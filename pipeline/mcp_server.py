@@ -47,6 +47,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "symbol": {"type": "string"},
                     "since_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "until_date": {"type": "string", "description": "YYYY-MM-DD, optional upper bound"},
                 },
                 "required": ["symbol", "since_date"],
             },
@@ -60,6 +61,7 @@ async def list_tools() -> list[Tool]:
                     "symbol": {"type": "string"},
                     "since_date": {"type": "string", "description": "YYYY-MM-DD"},
                     "max_articles": {"type": "integer", "default": 10},
+                    "until_date": {"type": "string", "description": "YYYY-MM-DD, optional upper bound"},
                 },
                 "required": ["symbol", "since_date"],
             },
@@ -98,11 +100,16 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "get_filings":
-        filings = edgar.get_filings(arguments["symbol"], arguments["since_date"])
+        filings = edgar.get_filings(
+            arguments["symbol"], arguments["since_date"], until_date=arguments.get("until_date")
+        )
         result = [f.__dict__ for f in filings]
     elif name == "get_news":
         articles = _news_provider.get_news(
-            arguments["symbol"], arguments["since_date"], arguments.get("max_articles", 10)
+            arguments["symbol"],
+            arguments["since_date"],
+            arguments.get("max_articles", 10),
+            until_date=arguments.get("until_date"),
         )
         result = [a.__dict__ for a in articles]
     elif name == "get_macro":

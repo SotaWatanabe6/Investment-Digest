@@ -9,6 +9,21 @@ const VALID_TYPES = new Set(["stock", "mutual_fund", "etf"]);
 // happens implicitly the first time the pipeline queries SEC EDGAR/Finnhub
 // for it; this route just guards against obviously malformed input.
 const SYMBOL_PATTERN = /^[A-Z]{1,5}(\.[A-Z])?$/;
+const FULL_NAME_MAX_LENGTH = 100;
+// full_name is rendered client-side (web/src/ui.ts escapes it before
+// insertion, but this is a second, independent layer — reject angle
+// brackets outright rather than relying solely on the client to escape
+// correctly). Allows letters, numbers, spaces, and common punctuation
+// found in real company/fund names (., &, -, ', (, ), /).
+const FULL_NAME_PATTERN = /^[A-Za-z0-9 .,&'()/-]+$/;
+
+function validateFullName(fullName: string): string | null {
+  const trimmed = fullName.trim();
+  if (!trimmed) return "full_name is required";
+  if (trimmed.length > FULL_NAME_MAX_LENGTH) return `full_name must be ${FULL_NAME_MAX_LENGTH} characters or fewer`;
+  if (!FULL_NAME_PATTERN.test(trimmed)) return "full_name contains unsupported characters";
+  return null;
+}
 
 watchlistRoutes.get("/watchlist", async (c) => {
   const db = getDb(c.env);
@@ -43,6 +58,10 @@ watchlistRoutes.post("/watchlist", async (c) => {
   if (!VALID_TYPES.has(body.type)) {
     return c.json({ error: "type must be one of: stock, mutual_fund, etf" }, 400);
   }
+  const fullNameError = validateFullName(body.full_name);
+  if (fullNameError) {
+    return c.json({ error: fullNameError }, 400);
+  }
 
   const db = getDb(c.env);
   try {
@@ -53,8 +72,13 @@ watchlistRoutes.post("/watchlist", async (c) => {
   } catch (err) {
     // UNIQUE constraint on symbol is the duplicate-prevention mechanism
     // (US-1 acceptance criteria) — surface it as a clean 409 rather than a
-    // raw DB error.
-    if (String(err).includes("UNIQUE")) {
+    // raw DB error. Prefer the driver's structured error code over
+    // substring-matching the error message, which is fragile against
+    // message-text changes; fall back to the substring check only if the
+    // code isn't present on whatever error shape was thrown.
+    const code = (err as { code?: string })?.code;
+    const isUniqueViolation = code ? code.startsWith("SQLITE_CONSTRAINT") : String(err).includes("UNIQUE");
+    if (isUniqueViolation) {
       return c.json({ error: `${symbol} is already on the watchlist` }, 409);
     }
     throw err;
@@ -75,6 +99,12 @@ watchlistRoutes.patch("/watchlist/:id", async (c) => {
   }
   if (body.type && !VALID_TYPES.has(body.type)) {
     return c.json({ error: "type must be one of: stock, mutual_fund, etf" }, 400);
+  }
+  if (body.full_name) {
+    const fullNameError = validateFullName(body.full_name);
+    if (fullNameError) {
+      return c.json({ error: fullNameError }, 400);
+    }
   }
 
   // Symbol is intentionally not editable here — it's the unique key

@@ -50,14 +50,27 @@ export async function hashPassword(password: string, salt?: Uint8Array): Promise
   return `pbkdf2$${PBKDF2_ITERATIONS}$${toHex(saltBytes.buffer as ArrayBuffer)}$${toHex(derived)}`;
 }
 
+function constantTimeEqual(a: string, b: string): boolean {
+  // Standard JS string equality (`===`) is not guaranteed constant-time —
+  // engines can short-circuit on the first differing character, which a
+  // manual XOR-over-all-bytes comparison avoids. XORing every byte
+  // regardless of earlier mismatches means the comparison always takes
+  // the same number of operations, independent of where (or whether) a
+  // mismatch occurs.
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
-  const [scheme, iterationsStr, saltHex] = storedHash.split("$");
+  const [scheme, , saltHex] = storedHash.split("$");
   if (scheme !== "pbkdf2") return false;
   const salt = fromHex(saltHex);
   const candidate = await hashPassword(password, salt);
-  // Constant-time-ish comparison: compare full strings rather than
-  // short-circuiting, to avoid leaking hash-length timing information.
-  return candidate.length === storedHash.length && candidate === storedHash;
+  return constantTimeEqual(candidate, storedHash);
 }
 
 async function hmacKey(secret: string): Promise<CryptoKey> {
@@ -81,7 +94,11 @@ export async function createSessionCookie(secret: string): Promise<string> {
 
 export async function verifySession(cookieHeader: string | null, secret: string): Promise<boolean> {
   if (!cookieHeader) return false;
-  const match = cookieHeader.match(/session=([^;]+)/);
+  // Anchored to match only a cookie literally named "session" — the
+  // previous unanchored /session=/ matched the substring anywhere in the
+  // header, so a cookie like "other_session=..." would be misparsed as
+  // this app's session token.
+  const match = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/);
   if (!match) return false;
 
   const [payload, signatureHex] = match[1].split(".");

@@ -20,6 +20,15 @@ from pricing import compute_cost_usd
 _RESULT_TOOL_NAME = "submit_result"
 
 
+class MalformedAgentResponseError(RuntimeError):
+    """Raised when Claude's response doesn't contain the forced tool-use
+    block we expect — e.g. the response was truncated before the tool call
+    (max_tokens too low) or the model otherwise didn't comply. tool_choice
+    forcing is a strong hint, not a hard guarantee, so this has to be
+    handled explicitly rather than left to crash as an opaque
+    StopIteration from an exhausted generator."""
+
+
 def call_structured(
     client: anthropic.Anthropic,
     model: str,
@@ -48,7 +57,13 @@ def call_structured(
 
     duration_ms = int((time.monotonic() - started) * 1000)
 
-    tool_use_block = next(b for b in response.content if b.type == "tool_use")
+    tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use_block is None:
+        raise MalformedAgentResponseError(
+            f"Model {model} did not return the expected '{_RESULT_TOOL_NAME}' tool call "
+            f"(stop_reason={response.stop_reason!r}). Response may have been truncated — "
+            f"check max_tokens for this call."
+        )
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
     cost_usd = compute_cost_usd(model, input_tokens, output_tokens)

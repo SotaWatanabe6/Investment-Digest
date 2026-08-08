@@ -11,7 +11,9 @@
 CREATE TABLE IF NOT EXISTS user (
   id INTEGER PRIMARY KEY CHECK (id = 1), -- enforces exactly one row
   digest_send_time TEXT NOT NULL DEFAULT '07:00', -- HH:MM, 24h, UTC. Phase 2 makes this user-editable.
-  global_pause_flag INTEGER NOT NULL DEFAULT 0 -- Phase 2 control surface; present now so schema doesn't change shape later.
+  global_pause_flag INTEGER NOT NULL DEFAULT 0, -- Phase 2 control surface; present now so schema doesn't change shape later.
+  failed_login_attempts INTEGER NOT NULL DEFAULT 0, -- login rate-limiting (web/src/routes/login.ts)
+  lockout_until TEXT -- ISO timestamp; NULL when not locked out
 );
 
 CREATE TABLE IF NOT EXISTS holding (

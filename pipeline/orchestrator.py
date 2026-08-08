@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 import anthropic
 
 import db
+from agents.common import MalformedAgentResponseError
 from config import Config
 from agents import composer, extraction, screening, validation
 from tools.email_tool import SendLimitExceededError, send_email
@@ -77,9 +78,28 @@ def run_daily_pipeline() -> None:
                 db.complete_digest_run(conn, run_id, "aborted_cost_ceiling", total_cost_usd)
                 return
 
-            entry, cost = _process_holding(
-                conn, client, config, run_id, holding, since_date, news_provider, until_date
-            )
+            try:
+                entry, cost = _process_holding(
+                    conn, client, config, run_id, holding, since_date, news_provider, until_date
+                )
+            except MalformedAgentResponseError as e:
+                # One holding's incomplete/truncated agent response
+                # shouldn't take down the entire run — degrade this
+                # holding to a flagged "unavailable" entry and continue,
+                # consistent with the source-failure reliability pattern
+                # already applied throughout tools/*.py.
+                print(f"Agent response error for {holding.symbol}: {e}", file=sys.stderr)
+                db.save_holding_digest_entry(
+                    conn, run_id, holding.id, [], [], [], {}, True,
+                    [f"Agent response error while processing this holding: {e}"],
+                )
+                entry, cost = (
+                    _entry_payload(
+                        holding, since_date, [], [], [], {}, True,
+                        [f"Agent response error while processing this holding: {e}"],
+                    ),
+                    0.0,
+                )
             total_cost_usd += cost
             holdings_payload.append(entry)
 
