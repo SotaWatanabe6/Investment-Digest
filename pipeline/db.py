@@ -90,11 +90,17 @@ def get_user_settings(conn) -> dict[str, Any]:
 
 
 def create_digest_run(conn, send_time: str) -> int:
-    conn.execute(
-        "INSERT INTO digest_run (run_date, send_time, status, started_at) VALUES (?, ?, 'failed', ?)",
+    # RETURNING id in the same statement, rather than a separate
+    # `SELECT last_insert_rowid()` call — over Turso's stateless HTTP
+    # (Hrana) protocol, a follow-up call isn't guaranteed to land on the
+    # same session as the INSERT, so last_insert_rowid() can silently
+    # return a stale/wrong value (this caused a real FOREIGN KEY failure
+    # downstream when the wrong id got used as a foreign key).
+    result = conn.execute(
+        "INSERT INTO digest_run (run_date, send_time, status, started_at) VALUES (?, ?, 'failed', ?) RETURNING id",
         (today_str(), send_time, now_iso()),
     )
-    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return result.fetchone()[0]
 
 
 def complete_digest_run(conn, run_id: int, status: str, total_cost_usd: float) -> None:
@@ -126,12 +132,13 @@ def save_holding_digest_entry(
     nothing_to_report: bool,
     low_confidence_flags: list,
 ) -> int:
-    conn.execute(
+    result = conn.execute(
         """
         INSERT INTO holding_digest_entry
             (digest_run_id, holding_id, hard_facts, subjective_info,
              discrepancy_analysis, macro_influence, nothing_to_report, low_confidence_flags)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (
             digest_run_id,
@@ -144,7 +151,7 @@ def save_holding_digest_entry(
             json.dumps(low_confidence_flags),
         ),
     )
-    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return result.fetchone()[0]
 
 
 def save_source(conn, holding_digest_entry_id: int, name: str, url: str, published_at: str | None) -> None:
