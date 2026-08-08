@@ -196,11 +196,25 @@ def _entry_payload(holding, since_date, hard_facts, subjective_info, discrepancy
 
 def _last_covered_date(conn) -> str:
     """The period start for this run: the most recent prior run's date, or
-    today if this is the first run ever (Phase 1 has no backfill)."""
+    a 7-day lookback if this is the first run ever.
+
+    Falling back to *today's date* here would give every agent a same-day
+    window to search — for a first run with no prior digest, that's
+    effectively asking "did anything happen in the last few hours?", which
+    is almost always empty regardless of how good the data sources are.
+    A 7-day window gives the first digest something real to report on;
+    every subsequent run naturally narrows back down to "since the last
+    sent digest," which is the correct steady-state behavior.
+    """
     row = conn.execute(
         "SELECT run_date FROM digest_run WHERE status = 'sent' ORDER BY run_date DESC LIMIT 1"
     ).fetchone()
-    return row[0] if row else db.today_str()
+    if row:
+        return row[0]
+
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
 if __name__ == "__main__":
