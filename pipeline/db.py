@@ -192,9 +192,15 @@ def save_sources(conn, holding_digest_entry_id: int, sources: list[tuple[str, st
     args: list[str | int | None] = []
     for name, url, published_at in sources:
         args.extend([holding_digest_entry_id, name, url, published_at])
+    # libsql_experimental requires parameters as a tuple, not a list --
+    # this crashed every real run since the batching change shipped
+    # ("'list' object cannot be converted to 'PyTuple'"), including this
+    # morning's first live scheduled run. Every single-row execute() call
+    # elsewhere in this file already passes a literal tuple, which is why
+    # this only broke the newly-batched multi-row inserts.
     conn.execute(
         f"INSERT INTO source (holding_digest_entry_id, name, url, published_at) VALUES {placeholders}",
-        args,
+        tuple(args),
     )
 
 
@@ -268,6 +274,8 @@ def log_agent_runs(conn, entries: list[tuple]) -> None:
         args.extend(
             [digest_run_id, holding_id, agent_name, input_tokens, output_tokens, cost_usd, json.dumps(tool_calls), status, duration_ms]
         )
+    # See the matching comment in save_sources -- libsql_experimental needs
+    # a tuple here, not a list.
     conn.execute(
         f"""
         INSERT INTO agent_run_log
@@ -275,5 +283,5 @@ def log_agent_runs(conn, entries: list[tuple]) -> None:
              cost_usd, tool_calls, status, duration_ms)
         VALUES {placeholders}
         """,
-        args,
+        tuple(args),
     )

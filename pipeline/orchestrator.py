@@ -34,6 +34,7 @@ from config import Config
 from agents import composer, extraction, screening, validation
 from tools.email_tool import SendLimitExceededError, send_email
 from tools.finnhub_adapter import FinnhubProvider
+from tools.market_calendar import is_market_open
 
 
 def run_daily_pipeline() -> None:
@@ -57,6 +58,18 @@ def run_daily_pipeline() -> None:
     # real day" protection a scheduled run still gets (period_date is None
     # there, so everything defaults to today as before).
     backfill_date = os.environ.get("BACKFILL_PERIOD_DATE") or None
+
+    # Only skip on a closed market for the normal scheduled path. A
+    # backfill run is a deliberate, explicit request for one specific
+    # historical day, so it always runs regardless of whether that day
+    # was a trading day.
+    if not backfill_date and not is_market_open():
+        print(
+            f"Market closed on {db.today_str()} (weekend or NYSE holiday) — skipping today's digest.",
+            file=sys.stderr,
+        )
+        return
+
     since_date = backfill_date or _last_covered_date(conn)
     until_date = backfill_date  # None for normal runs — unbounded through "now"
     period_date = backfill_date  # None for normal runs — db.py defaults to today
