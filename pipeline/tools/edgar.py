@@ -6,6 +6,7 @@ adapter interface (see technical-prd.md Section 4.5).
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 import httpx
@@ -48,42 +49,53 @@ def _cik_for_symbol(client: httpx.Client, symbol: str) -> str | None:
 def get_filings(symbol: str, since_date: str) -> list[Filing]:
     """Fetch Form 4 (buys and sells), 8-K, and earnings-related filings for
     a symbol since the given date (YYYY-MM-DD). This is the `get_filings`
-    MCP tool's underlying implementation."""
-    with _client() as client:
-        cik = _cik_for_symbol(client, symbol)
-        if cik is None:
-            return []
+    MCP tool's underlying implementation.
 
-        resp = client.get(f"{EDGAR_BASE_URL}/submissions/CIK{cik}.json")
-        resp.raise_for_status()
-        data = resp.json()
+    Per the PRD's reliability requirement, an EDGAR outage or lookup
+    failure degrades this holding to "no filings found" rather than
+    crashing the whole pipeline run — mutual fund symbols in particular
+    won't resolve to a CIK at all (they don't file via the equity ticker
+    registry), which is expected, not an error.
+    """
+    try:
+        with _client() as client:
+            cik = _cik_for_symbol(client, symbol)
+            if cik is None:
+                return []
 
-        recent = data.get("filings", {}).get("recent", {})
-        forms = recent.get("form", [])
-        dates = recent.get("filingDate", [])
-        accession_numbers = recent.get("accessionNumber", [])
-        primary_documents = recent.get("primaryDocument", [])
+            resp = client.get(f"{EDGAR_BASE_URL}/submissions/CIK{cik}.json")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        print(f"SEC EDGAR get_filings failed for {symbol}: {e}", file=sys.stderr)
+        return []
 
-        filings: list[Filing] = []
-        for i, form_type in enumerate(forms):
-            if dates[i] < since_date:
-                continue
-            if form_type not in ("4", "8-K"):
-                # Earnings releases typically surface as 8-K Item 2.02;
-                # narrower earnings-specific parsing is a Phase 2 refinement.
-                continue
+    recent = data.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    dates = recent.get("filingDate", [])
+    accession_numbers = recent.get("accessionNumber", [])
+    primary_documents = recent.get("primaryDocument", [])
 
-            accession = accession_numbers[i].replace("-", "")
-            doc_url = (
-                f"{EDGAR_BASE_URL}/Archives/edgar/data/{int(cik)}/"
-                f"{accession}/{primary_documents[i]}"
+    filings: list[Filing] = []
+    for i, form_type in enumerate(forms):
+        if dates[i] < since_date:
+            continue
+        if form_type not in ("4", "8-K"):
+            # Earnings releases typically surface as 8-K Item 2.02;
+            # narrower earnings-specific parsing is a Phase 2 refinement.
+            continue
+
+        accession = accession_numbers[i].replace("-", "")
+        doc_url = (
+            f"{EDGAR_BASE_URL}/Archives/edgar/data/{int(cik)}/"
+            f"{accession}/{primary_documents[i]}"
+        )
+        filings.append(
+            Filing(
+                form_type=form_type,
+                filed_at=dates[i],
+                summary=f"{form_type} filed {dates[i]}",
+                url=doc_url,
             )
-            filings.append(
-                Filing(
-                    form_type=form_type,
-                    filed_at=dates[i],
-                    summary=f"{form_type} filed {dates[i]}",
-                    url=doc_url,
-                )
-            )
-        return filings
+        )
+    return filings
