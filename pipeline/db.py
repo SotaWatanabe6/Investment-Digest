@@ -42,12 +42,26 @@ class _ResilientConnection:
 
     def execute(self, *args, **kwargs):
         try:
-            return self._conn.execute(*args, **kwargs)
+            result = self._conn.execute(*args, **kwargs)
         except ValueError as e:
             if "stream not found" not in str(e):
                 raise
             self._conn = self._new_conn()
-            return self._conn.execute(*args, **kwargs)
+            result = self._conn.execute(*args, **kwargs)
+
+        # libsql_experimental follows Python's DB-API 2.0 convention of
+        # requiring an explicit commit — it does not autocommit. Without
+        # this, every write in a run (digest_run, holding_digest_entry,
+        # agent_run_log, etc.) was silently discarded when the process
+        # exited: reads within the same connection saw the "written" data
+        # (visible inside the open transaction), but nothing was ever
+        # actually persisted to Turso, so a separate connection querying
+        # afterward found the tables empty even after a fully "successful"
+        # run. Committing after every statement (cheap no-op if there's
+        # nothing pending) fixes this without needing to track read vs.
+        # write statements separately.
+        self._conn.commit()
+        return result
 
 
 def connect(config: Config):
