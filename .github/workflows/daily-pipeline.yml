@@ -3,10 +3,12 @@ name: Daily Digest Pipeline
 on:
   schedule:
     # Fixed daily trigger for Phase 1 (US-3 configurable send time is
-    # Phase 2 — see feature-implementation-plan.md). 12:00 UTC is a
-    # placeholder; adjust to your preferred send time before relying on
-    # this, since GitHub Actions cron has no per-user config surface.
-    - cron: "0 12 * * *"
+    # Phase 2 — see feature-implementation-plan.md). GitHub Actions cron
+    # only runs on fixed UTC times, so 14:00 UTC = 9am EST (winter) but
+    # 10am EDT (summer) — cron can't auto-adjust for daylight saving.
+    # Re-adjust to 13:00 UTC manually when EDT is in effect if you want a
+    # true year-round 9am Eastern.
+    - cron: "0 14 * * *"
   workflow_dispatch:
     inputs:
       backfill_period_date:
