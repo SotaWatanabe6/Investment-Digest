@@ -21,9 +21,10 @@ autonomously choose which tool to call next.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 
@@ -130,29 +131,40 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
     )
 
     if not screen_result.data.get("has_new_activity", False):
-        entry_id = db.save_holding_digest_entry(
-            conn, run_id, holding.id, [], [], [], {}, True, []
-        )
+        db.save_holding_digest_entry(conn, run_id, holding.id, [], [], [], {}, True, [])
         return _entry_payload(holding, since_date, [], [], [], {}, True, []), cost
 
-    filings_result, filings_ms = extraction.extract_filings(
-        client, config.reasoning_model, holding, since_date, until_date=until_date
-    )
-    news_result, news_ms = extraction.extract_news(
-        client, config.reasoning_model, holding, since_date, news_provider, until_date=until_date
-    )
-    macro_result, macro_ms = extraction.extract_macro(client, config.reasoning_model, holding, since_date, news_provider)
+    # The three extraction calls are independent (different sources, no
+    # data dependency between them) and each is a several-second LLM
+    # round trip — running them concurrently rather than sequentially cuts
+    # this phase's wall-clock time roughly 3x per active holding. Only the
+    # Anthropic calls themselves run in threads; the resulting DB writes
+    # below still happen sequentially on the main thread's connection, so
+    # there's no concurrent access to the shared _ResilientConnection.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        filings_future = executor.submit(
+            extraction.extract_filings, client, config.reasoning_model, holding, since_date, until_date=until_date
+        )
+        news_future = executor.submit(
+            extraction.extract_news, client, config.reasoning_model, holding, since_date, news_provider, until_date=until_date
+        )
+        macro_future = executor.submit(
+            extraction.extract_macro, client, config.reasoning_model, holding, since_date, news_provider
+        )
+        filings_result, filings_ms = filings_future.result()
+        news_result, news_ms = news_future.result()
+        macro_result, macro_ms = macro_future.result()
+
     cost += filings_result.cost_usd + news_result.cost_usd + macro_result.cost_usd
 
-    for name, result, ms in [
-        ("extraction_filings", filings_result, filings_ms),
-        ("extraction_news", news_result, news_ms),
-        ("extraction_macro", macro_result, macro_ms),
-    ]:
-        db.log_agent_run(
-            conn, run_id, holding.id, name,
-            result.input_tokens, result.output_tokens, result.cost_usd, [], "success", ms,
-        )
+    db.log_agent_runs(
+        conn,
+        [
+            (run_id, holding.id, "extraction_filings", filings_result.input_tokens, filings_result.output_tokens, filings_result.cost_usd, [], "success", filings_ms),
+            (run_id, holding.id, "extraction_news", news_result.input_tokens, news_result.output_tokens, news_result.cost_usd, [], "success", news_ms),
+            (run_id, holding.id, "extraction_macro", macro_result.input_tokens, macro_result.output_tokens, macro_result.cost_usd, [], "success", macro_ms),
+        ],
+    )
 
     # Every .data.get(...) below defaults to an empty/falsy value rather
     # than indexing directly — Claude's forced tool-use is a strong hint
@@ -200,11 +212,12 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
         conn, run_id, holding.id,
         hard_facts, subjective_info, discrepancy_analysis, macro_result.data, False, low_confidence,
     )
-    for item in subjective_info:
-        source_name = item.get("source_name")
-        source_url = item.get("source_url")
-        if source_name and source_url:
-            db.save_source(conn, entry_id, source_name, source_url, item.get("published_at"))
+    sources = [
+        (item.get("source_name"), item.get("source_url"), item.get("published_at"))
+        for item in subjective_info
+        if item.get("source_name") and item.get("source_url")
+    ]
+    db.save_sources(conn, entry_id, sources)
 
     return (
         _entry_payload(
@@ -247,8 +260,6 @@ def _last_covered_date(conn) -> str:
     ).fetchone()
     if row:
         return row[0]
-
-    from datetime import datetime, timedelta, timezone
 
     return (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
 

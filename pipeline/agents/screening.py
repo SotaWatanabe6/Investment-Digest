@@ -5,6 +5,8 @@ extraction/validation/composition steps are worth running at all.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import anthropic
 
 from agents.common import call_structured
@@ -31,8 +33,16 @@ def run_screening(
     passes a specific historical upper bound so the window matches exactly
     one day rather than extending through the real present.
     """
-    filings = edgar.get_filings(holding.symbol, since_date, until_date=until_date)
-    news = news_provider.get_news(holding.symbol, since_date, max_articles=3, until_date=until_date)
+    # Two independent HTTP fetches (SEC EDGAR, Finnhub) — running them
+    # concurrently shaves the slower of the two off this gate's latency
+    # rather than paying for both sequentially, on every holding, every run.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        filings_future = executor.submit(edgar.get_filings, holding.symbol, since_date, until_date=until_date)
+        news_future = executor.submit(
+            news_provider.get_news, holding.symbol, since_date, max_articles=3, until_date=until_date
+        )
+        filings = filings_future.result()
+        news = news_future.result()
 
     user_content = (
         f"Holding: {holding.full_name} ({holding.symbol})\n"

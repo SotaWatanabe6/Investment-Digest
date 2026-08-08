@@ -54,6 +54,15 @@ MACRO_EXTRACTION_INSTRUCTION = """\
 Your task: summarize macro context across three tiers — global market \
 conditions, US market conditions, and sector-specific conditions relevant \
 to this holding — based on the macro data provided.
+
+Important limitation of the current data source: the "global" and "US" \
+tiers are currently both drawn from the same general US market news feed \
+— there is no distinct international/global-specific data source yet. Do \
+NOT invent or fabricate a separate global narrative that isn't actually \
+supported by the data given. If the provided data is US-market-specific, \
+either state the same content for both tiers or explicitly note in the \
+global_context field that distinct global data isn't currently available \
+from this source, rather than presenting a fabricated distinction as fact.
 """
 
 VALIDATION_INSTRUCTION = """\

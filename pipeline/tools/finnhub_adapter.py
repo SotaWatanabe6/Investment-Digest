@@ -17,6 +17,15 @@ FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 class FinnhubProvider:
     def __init__(self, api_key: str):
         self._api_key = api_key
+        # One FinnhubProvider instance lives for exactly one pipeline run
+        # (created once in orchestrator.py and shared across every
+        # holding). "General" market news isn't holding-specific, so
+        # without this cache every holding's macro extraction re-fetched
+        # the identical response from Finnhub — pure waste that scaled
+        # with watchlist size. Caching per-instance (i.e. per-run) is safe
+        # since a fresh instance is created each run, so there's no
+        # cross-run staleness risk.
+        self._general_news_cache: list[dict] | None = None
 
     def _client(self) -> httpx.Client:
         return httpx.Client(params={"token": self._api_key}, timeout=15.0)
@@ -61,19 +70,24 @@ class FinnhubProvider:
 
     def get_macro(self, symbol: str, sector: str | None, since_date: str) -> list[MacroSnapshot]:
         snapshots: list[MacroSnapshot] = []
-        try:
-            with self._client() as client:
-                # Global/US tier: general market news as a proxy for conditions
-                # (Finnhub's free tier doesn't expose a dedicated indices-summary
-                # endpoint) — general category covers major index-moving stories.
-                resp = client.get(f"{FINNHUB_BASE_URL}/news", params={"category": "general"})
-                resp.raise_for_status()
-                for item in resp.json()[:5]:
-                    snapshots.append(
-                        MacroSnapshot(tier="us", label="US market conditions", summary=item.get("headline", ""))
-                    )
-        except httpx.HTTPStatusError as e:
-            print(f"Finnhub get_macro failed for {symbol}: {e}", file=sys.stderr)
+
+        if self._general_news_cache is None:
+            try:
+                with self._client() as client:
+                    # Global/US tier: general market news as a proxy for conditions
+                    # (Finnhub's free tier doesn't expose a dedicated indices-summary
+                    # endpoint) — general category covers major index-moving stories.
+                    resp = client.get(f"{FINNHUB_BASE_URL}/news", params={"category": "general"})
+                    resp.raise_for_status()
+                    self._general_news_cache = resp.json()
+            except httpx.HTTPStatusError as e:
+                print(f"Finnhub get_macro failed for {symbol}: {e}", file=sys.stderr)
+                self._general_news_cache = []
+
+        for item in self._general_news_cache[:5]:
+            snapshots.append(
+                MacroSnapshot(tier="us", label="US market conditions", summary=item.get("headline", ""))
+            )
 
         if sector:
             # Sector tier: peer performance via Finnhub's sector-mapped

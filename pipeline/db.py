@@ -181,10 +181,20 @@ def save_holding_digest_entry(
     return result.fetchone()[0]
 
 
-def save_source(conn, holding_digest_entry_id: int, name: str, url: str, published_at: str | None) -> None:
+def save_sources(conn, holding_digest_entry_id: int, sources: list[tuple[str, str, str | None]]) -> None:
+    """Batch insert of (name, url, published_at) tuples in a single round
+    trip, rather than one INSERT per source. Turso's HTTP-based (Hrana)
+    protocol means every execute() carries real network latency, and a
+    busy news day can easily have a dozen+ sources for one holding."""
+    if not sources:
+        return
+    placeholders = ", ".join(["(?, ?, ?, ?)"] * len(sources))
+    args: list[str | int | None] = []
+    for name, url, published_at in sources:
+        args.extend([holding_digest_entry_id, name, url, published_at])
     conn.execute(
-        "INSERT INTO source (holding_digest_entry_id, name, url, published_at) VALUES (?, ?, ?, ?)",
-        (holding_digest_entry_id, name, url, published_at),
+        f"INSERT INTO source (holding_digest_entry_id, name, url, published_at) VALUES {placeholders}",
+        args,
     )
 
 
@@ -234,22 +244,36 @@ def log_agent_run(
     status: str,
     duration_ms: int,
 ) -> None:
+    log_agent_runs(
+        conn,
+        [
+            (digest_run_id, holding_id, agent_name, input_tokens, output_tokens, cost_usd, tool_calls, status, duration_ms)
+        ],
+    )
+
+
+def log_agent_runs(conn, entries: list[tuple]) -> None:
+    """Batch insert of agent_run_log rows in a single round trip. Each
+    entry is (digest_run_id, holding_id, agent_name, input_tokens,
+    output_tokens, cost_usd, tool_calls, status, duration_ms) — the same
+    shape log_agent_run takes, which now just delegates here with a
+    one-element list. Extraction logs 3 independent agent calls per
+    holding; batching them (rather than 3 separate execute() round trips)
+    is a direct latency win on Turso's HTTP-based protocol."""
+    if not entries:
+        return
+    placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(entries))
+    args: list = []
+    for digest_run_id, holding_id, agent_name, input_tokens, output_tokens, cost_usd, tool_calls, status, duration_ms in entries:
+        args.extend(
+            [digest_run_id, holding_id, agent_name, input_tokens, output_tokens, cost_usd, json.dumps(tool_calls), status, duration_ms]
+        )
     conn.execute(
-        """
+        f"""
         INSERT INTO agent_run_log
             (digest_run_id, holding_id, agent_name, input_tokens, output_tokens,
              cost_usd, tool_calls, status, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES {placeholders}
         """,
-        (
-            digest_run_id,
-            holding_id,
-            agent_name,
-            input_tokens,
-            output_tokens,
-            cost_usd,
-            json.dumps(tool_calls),
-            status,
-            duration_ms,
-        ),
+        args,
     )
