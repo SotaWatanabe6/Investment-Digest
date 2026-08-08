@@ -82,8 +82,9 @@ def run_daily_pipeline() -> None:
             total_cost_usd += cost
             holdings_payload.append(entry)
 
+        period_end = until_date or db.today_str()
         compose_result, compose_ms = composer.compose_digest(
-            client, config.reasoning_model, holdings_payload, since_date, total_cost_usd
+            client, config.reasoning_model, holdings_payload, since_date, period_end, total_cost_usd
         )
         total_cost_usd += compose_result.cost_usd
         db.log_agent_run(
@@ -92,15 +93,17 @@ def run_daily_pipeline() -> None:
             compose_result.cost_usd, [], "success", compose_ms,
         )
 
+        daily_summaries = compose_result.data.get("daily_summary_by_holding", {})
         for holding in holdings:
-            summary = compose_result.data["daily_summary_by_holding"].get(str(holding.id), "")
+            summary = daily_summaries.get(str(holding.id), "")
             if summary:
                 db.save_daily_summary(conn, holding.id, summary, len(summary.split()), summary_date=period_date)
 
         try:
             send_email(
                 conn, config.resend_api_key, config.digest_to_email, config.digest_from_email,
-                compose_result.data["subject_line"], compose_result.data["html_body"],
+                compose_result.data.get("subject_line", "Your Investment Digest"),
+                compose_result.data.get("html_body", "<p>No content generated for this run.</p>"),
                 period_date=period_date,
             )
             db.complete_digest_run(conn, run_id, "sent", total_cost_usd)
@@ -126,7 +129,7 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
         screen_result.cost_usd, [], "success", screen_ms,
     )
 
-    if not screen_result.data["has_new_activity"]:
+    if not screen_result.data.get("has_new_activity", False):
         entry_id = db.save_holding_digest_entry(
             conn, run_id, holding.id, [], [], [], {}, True, []
         )
@@ -151,9 +154,21 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
             result.input_tokens, result.output_tokens, result.cost_usd, [], "success", ms,
         )
 
+    # Every .data.get(...) below defaults to an empty/falsy value rather
+    # than indexing directly — Claude's forced tool-use is a strong hint
+    # toward the schema, not a hard guarantee every "required" field is
+    # populated. A single incomplete agent response should degrade that
+    # field to empty, not crash the whole run (PRD reliability
+    # requirement) — this is exactly what happened here: a news extraction
+    # response came back without "subjective_info" and took down an entire
+    # backfill day before this fix.
+    hard_facts = filings_result.data.get("hard_facts", [])
+    subjective_info = news_result.data.get("subjective_info", [])
+    filings_low_confidence = filings_result.data.get("low_confidence_flags", [])
+    news_low_confidence = news_result.data.get("low_confidence_flags", [])
+
     val_result, val_ms = validation.run_validation(
-        conn, client, config.reasoning_model, holding,
-        filings_result.data["hard_facts"], news_result.data["subjective_info"],
+        conn, client, config.reasoning_model, holding, hard_facts, subjective_info,
     )
     cost += val_result.cost_usd
     db.log_agent_run(
@@ -169,8 +184,7 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
         deeper_news = news_provider.get_news(holding.symbol, since_date, max_articles=25, until_date=until_date)
         extra_context = "\n".join(f"- {a.headline}: {a.summary}" for a in deeper_news)
         val_result, val_ms = validation.run_validation(
-            conn, client, config.reasoning_model, holding,
-            filings_result.data["hard_facts"], news_result.data["subjective_info"],
+            conn, client, config.reasoning_model, holding, hard_facts, subjective_info,
             extra_context=extra_context,
         )
         cost += val_result.cost_usd
@@ -179,20 +193,23 @@ def _process_holding(conn, client, config, run_id, holding, since_date, news_pro
             val_result.input_tokens, val_result.output_tokens, val_result.cost_usd, [], "success", val_ms,
         )
 
-    low_confidence = filings_result.data["low_confidence_flags"] + news_result.data["low_confidence_flags"]
+    discrepancy_analysis = val_result.data.get("discrepancy_analysis", [])
+    low_confidence = filings_low_confidence + news_low_confidence
 
     entry_id = db.save_holding_digest_entry(
         conn, run_id, holding.id,
-        filings_result.data["hard_facts"], news_result.data["subjective_info"],
-        val_result.data["discrepancy_analysis"], macro_result.data, False, low_confidence,
+        hard_facts, subjective_info, discrepancy_analysis, macro_result.data, False, low_confidence,
     )
-    for item in news_result.data["subjective_info"]:
-        db.save_source(conn, entry_id, item["source_name"], item["source_url"], item.get("published_at"))
+    for item in subjective_info:
+        source_name = item.get("source_name")
+        source_url = item.get("source_url")
+        if source_name and source_url:
+            db.save_source(conn, entry_id, source_name, source_url, item.get("published_at"))
 
     return (
         _entry_payload(
-            holding, since_date, filings_result.data["hard_facts"], news_result.data["subjective_info"],
-            val_result.data["discrepancy_analysis"], macro_result.data, False, low_confidence,
+            holding, since_date, hard_facts, subjective_info,
+            discrepancy_analysis, macro_result.data, False, low_confidence,
         ),
         cost,
     )
